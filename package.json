@@ -12,6 +12,12 @@
     "deploy": "gh-pages -d dist"
   },
   "dependencies": {
+    "@ant-design/icons": "^6.3.2",
+    "@ant-design/v5-patch-for-react-19": "^1.0.3",
+    "antd": "^6.5.1",
+    "exceljs": "^4.4.0",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.8",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"
   },

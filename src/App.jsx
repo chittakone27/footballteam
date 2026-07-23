@@ -1,7 +1,22 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  Alert,
+  Button,
+  ConfigProvider,
+  Flex,
+  InputNumber,
+  Space,
+  Statistic,
+  Table,
+  Typography,
+  theme as antdTheme,
+} from 'antd'
+import { DownloadOutlined, PlusOutlined } from '@ant-design/icons'
 import './App.css'
-import SheetRow from './SheetRow'
+import ExportModal from './ExportModal'
+import { buildColumns } from './columns'
 import { addRow, deleteRow, fetchRows, fileToBase64, isConfigured, updateRow } from './api'
+import { EXPORT_COLUMNS, exportToPdf, exportToXlsx } from './export'
 
 const blankSnapshot = () => ({ name: '', shirtNumber: '', size: '' })
 
@@ -56,14 +71,31 @@ function mergeServerRows(localRows, serverRows) {
   return [...merged, ...unsavedLocalRows]
 }
 
+function usePrefersDark() {
+  const [prefersDark, setPrefersDark] = useState(
+    () => window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+  )
+
+  useEffect(() => {
+    const mql = window.matchMedia('(prefers-color-scheme: dark)')
+    const handler = (e) => setPrefersDark(e.matches)
+    mql.addEventListener('change', handler)
+    return () => mql.removeEventListener('change', handler)
+  }, [])
+
+  return prefersDark
+}
+
 function App() {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [loadProgress, setLoadProgress] = useState(0)
   const [loadError, setLoadError] = useState('')
+  const [exportModal, setExportModal] = useState(null)
   const newRowId = useRef(0)
   const rowsRef = useRef([])
   const pendingSaves = useRef(new Map())
+  const prefersDark = usePrefersDark()
 
   // rowsRef is the authoritative, synchronously-updated source of truth for
   // any logic that reads "current rows" (e.g. inside async save chains).
@@ -268,10 +300,6 @@ function App() {
   }
 
   async function handleRemoveImage(key) {
-    const current = rowsRef.current.find((r) => r.key === key)
-    if (!current || !current.imageUrl) return
-    if (!window.confirm(`ລຶບຮູບຫຼັກຖານການໂອນ ຂອງ "${current.name}" ບໍ?`)) return
-
     await runExclusive(key, async () => {
       const row = rowsRef.current.find((r) => r.key === key)
       if (!row || !row.imageUrl) return
@@ -287,8 +315,6 @@ function App() {
       updateRows((prev) => prev.filter((r) => r.key !== key))
       return
     }
-
-    if (!window.confirm(`ລຶບແຖວຂອງ "${row.name}" ບໍ?`)) return
 
     updateRows((prev) => prev.map((r) => (r.key === key ? { ...r, status: 'saving' } : r)))
     try {
@@ -309,6 +335,36 @@ function App() {
     }
   }
 
+  function openExportModal(format) {
+    setExportModal({
+      format,
+      selected: Object.fromEntries(EXPORT_COLUMNS.map((c) => [c.key, true])),
+    })
+  }
+
+  function toggleExportColumn(key) {
+    setExportModal((prev) =>
+      prev ? { ...prev, selected: { ...prev.selected, [key]: !prev.selected[key] } } : prev
+    )
+  }
+
+  async function confirmExport() {
+    if (!exportModal) return
+    const columnKeys = EXPORT_COLUMNS.filter((c) => exportModal.selected[c.key]).map((c) => c.key)
+
+    try {
+      if (exportModal.format === 'xlsx') {
+        await exportToXlsx(rows, columnKeys)
+      } else {
+        await exportToPdf(rows, columnKeys)
+      }
+    } catch {
+      window.alert(exportModal.format === 'xlsx' ? 'Export Excel ບໍ່ສຳເລັດ' : 'Export PDF ບໍ່ສຳເລັດ')
+    } finally {
+      setExportModal(null)
+    }
+  }
+
   const shirtNumberCounts = rows.reduce((counts, r) => {
     const key = r.shirtNumber.trim()
     if (key) counts[key] = (counts[key] || 0) + 1
@@ -318,97 +374,146 @@ function App() {
   const paidCount = rows.filter((r) => r.imageUrl).length
   const totalCollected = paidCount * PRICE_PER_UNIT
 
+  const columns = useMemo(
+    () =>
+      buildColumns({
+        shirtNumberCounts,
+        onFieldChange: handleFieldChange,
+        onFieldCommit: handleFieldCommit,
+        onFileChange: handleFileChange,
+        onRemoveImage: handleRemoveImage,
+        onDelete: handleDelete,
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rows]
+  )
+
+  const themeConfig = {
+    algorithm: prefersDark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
+    token: { colorPrimary: '#aa3bff', fontFamily: 'var(--sans)' },
+    components: {
+      Table: { headerBg: prefersDark ? '#374151' : '#e5e7eb' },
+    },
+  }
+
   if (isConfigured() && loading) {
     return (
-      <div className="page">
-        <div className="loading-fullscreen">
+      <ConfigProvider theme={themeConfig}>
+        <Flex vertical align="center" justify="center" style={{ minHeight: '100svh', gap: 14 }}>
           <span className="football-spinner" aria-hidden="true">
             ⚽
           </span>
-          <p className="loading-percent">{Math.round(loadProgress)}%</p>
-          <p className="loading-text">ກຳລັງໂຫຼດຂໍ້ມູນ...</p>
-        </div>
-      </div>
+          <Typography.Title level={3} style={{ margin: 0 }}>
+            {Math.round(loadProgress)}%
+          </Typography.Title>
+          <Typography.Text type="secondary">ກຳລັງໂຫຼດຂໍ້ມູນ...</Typography.Text>
+        </Flex>
+      </ConfigProvider>
     )
   }
 
   return (
-    <div className="page">
-      <div className="sheet-card">
-        <h1>ຕາຕະລາງຊື່ເຮັດເສື້ອ</h1>
+    <ConfigProvider theme={themeConfig}>
+      <div className="page">
+        <div className="sheet-card">
+          <Typography.Title level={3} style={{ marginBottom: 16 }}>
+            ຕາຕະລາງຊື່ເຮັດເສື້ອ
+          </Typography.Title>
 
-        {!isConfigured() && (
-          <p className="banner banner-error">
-            ຍັງບໍ່ໄດ້ຕັ້ງຄ່າ VITE_APPS_SCRIPT_URL. ເບິ່ງ README.md ເພື່ອຕັ້ງຄ່າ Apps Script.
-          </p>
-        )}
+          {!isConfigured() && (
+            <Alert
+              type="error"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message="ຍັງບໍ່ໄດ້ຕັ້ງຄ່າ VITE_APPS_SCRIPT_URL. ເບິ່ງ README.md ເພື່ອຕັ້ງຄ່າ Apps Script."
+            />
+          )}
 
-        {isConfigured() && !loadError && (
-          <div className="summary-card">
-            <div className="summary-stat">
-              <span className="summary-label">ເງິນທີ່ເກັບໄດ້ທັງໝົດ</span>
-              <span className="summary-value">{totalCollected.toLocaleString()} ກີບ</span>
-              <span className="summary-sub">({paidCount} ຄົນຈ່າຍແລ້ວ)</span>
-            </div>
-            <label className="summary-input">
-              <span>ລາຄາຕໍ່ຄົນ</span>
-              <input type="number" value={PRICE_PER_UNIT} disabled />
-              <span>ກີບ</span>
-            </label>
-          </div>
-        )}
+          {isConfigured() && !loadError && (
+            <Flex
+              wrap
+              align="center"
+              justify="space-between"
+              gap={16}
+              style={{
+                padding: '16px 20px',
+                marginBottom: 16,
+                borderRadius: 10,
+                border: '1px solid rgba(127,127,127,0.3)',
+                background: prefersDark ? '#374151' : '#e5e7eb',
+              }}
+            >
+              <Statistic
+                title="ເງິນທີ່ເກັບໄດ້ທັງໝົດ"
+                value={totalCollected}
+                suffix="ກີບ"
+                formatter={(value) => value.toLocaleString()}
+              />
+              <Typography.Text type="secondary">({paidCount} ຄົນຈ່າຍແລ້ວ)</Typography.Text>
+              <Space>
+                <Typography.Text>ລາຄາຕໍ່ຄົນ</Typography.Text>
+                <InputNumber value={PRICE_PER_UNIT} disabled />
+                <Typography.Text>ກີບ</Typography.Text>
+              </Space>
+            </Flex>
+          )}
 
-        {isConfigured() && loadError && (
-          <p className="banner banner-error">
-            {loadError}{' '}
-            <button type="button" className="link-button" onClick={load}>
-              ລອງໃໝ່
-            </button>
-          </p>
-        )}
+          {isConfigured() && !loadError && rows.length > 0 && (
+            <Space style={{ marginBottom: 16 }}>
+              <Button icon={<DownloadOutlined />} onClick={() => openExportModal('xlsx')}>
+                Export Excel
+              </Button>
+              <Button icon={<DownloadOutlined />} onClick={() => openExportModal('pdf')}>
+                Export PDF
+              </Button>
+            </Space>
+          )}
 
-        {isConfigured() && !loadError && (
-          <div className="table-scroll">
-            <table className="sheet-table">
-              <thead>
-                <tr>
-                  <th className="col-num">#</th>
-                  <th className="col-name">ຊື</th>
-                  <th>ເບີເສື້ອ</th>
-                  <th>size</th>
-                  <th>ຫຼັກຖານການໂອນ (ຮູບ)</th>
-                  <th>ສະຖານະ</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row, i) => (
-                  <SheetRow
-                    key={row.key}
-                    row={row}
-                    index={i}
-                    isDuplicateShirtNumber={
-                      Boolean(row.shirtNumber.trim()) && shirtNumberCounts[row.shirtNumber.trim()] > 1
-                    }
-                    onFieldChange={handleFieldChange}
-                    onFieldCommit={handleFieldCommit}
-                    onFileChange={handleFileChange}
-                    onRemoveImage={handleRemoveImage}
-                    onDelete={handleDelete}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+          {isConfigured() && loadError && (
+            <Alert
+              type="error"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message={
+                <>
+                  {loadError}{' '}
+                  <Button type="link" size="small" onClick={load}>
+                    ລອງໃໝ່
+                  </Button>
+                </>
+              }
+            />
+          )}
 
-        {isConfigured() && !loadError && (
-          <button type="button" className="add-row-button" onClick={handleAddRow}>
-            + ເພີ່ມແຖວ
-          </button>
+          {isConfigured() && !loadError && (
+            <Table
+              rowKey="key"
+              dataSource={rows}
+              columns={columns}
+              pagination={false}
+              scroll={{ x: 'max-content' }}
+              rowClassName={(record) => (record.status === 'error' ? 'row-error' : '')}
+              footer={() => (
+                <Button type="dashed" block icon={<PlusOutlined />} onClick={handleAddRow}>
+                  ເພີ່ມແຖວ
+                </Button>
+              )}
+            />
+          )}
+        </div>
+
+        {exportModal && (
+          <ExportModal
+            format={exportModal.format}
+            columns={EXPORT_COLUMNS}
+            selected={exportModal.selected}
+            onToggle={toggleExportColumn}
+            onCancel={() => setExportModal(null)}
+            onConfirm={confirmExport}
+          />
         )}
       </div>
-    </div>
+    </ConfigProvider>
   )
 }
 
