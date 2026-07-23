@@ -20,7 +20,7 @@ import { EXPORT_COLUMNS, exportToPdf, exportToXlsx } from './export'
 
 const blankSnapshot = () => ({ name: '', shirtNumber: '', size: '' })
 
-const PRICE_PER_UNIT = 130000
+const PRICE_PER_UNIT = 170000
 
 // Google Sheets returns numeric-looking cells (e.g. shirt numbers) as JS
 // numbers, not strings — coerce everything to a string so .trim() etc. work.
