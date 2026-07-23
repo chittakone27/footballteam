@@ -12,7 +12,7 @@ import {
   Typography,
   theme as antdTheme,
 } from 'antd'
-import { DownloadOutlined, PlusOutlined } from '@ant-design/icons'
+import { DownloadOutlined, LoadingOutlined, PlusOutlined } from '@ant-design/icons'
 import './App.css'
 import ExportModal from './ExportModal'
 import { buildColumns } from './columns'
@@ -108,7 +108,7 @@ function App() {
 }
 
 function AppContent({ prefersDark }) {
-  const { message } = AntdApp.useApp()
+  const { notification } = AntdApp.useApp()
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [loadProgress, setLoadProgress] = useState(0)
@@ -255,14 +255,16 @@ function AppContent({ prefersDark }) {
 
     // Apps Script doesn't expose real upload progress, so climb toward 90%
     // while waiting and snap to 100% once the save actually completes —
-    // same simulated-percentage approach as the initial page load.
+    // same simulated-percentage approach as the initial page load. Shown at
+    // the bottom of the screen so it stays visible on mobile.
     const messageKey = `save-${key}`
     let saveProgress = 0
     const showProgress = () =>
-      message.open({
+      notification.open({
         key: messageKey,
-        type: 'loading',
-        content: `ກຳລັງບັນທຶກ... ${Math.round(saveProgress)}%`,
+        message: `ກຳລັງບັນທຶກ... ${Math.round(saveProgress)}%`,
+        icon: <LoadingOutlined />,
+        placement: 'bottom',
         duration: 0,
       })
     showProgress()
@@ -328,7 +330,13 @@ function AppContent({ prefersDark }) {
       )
 
       clearInterval(progressTimer)
-      message.open({ key: messageKey, type: 'success', content: 'ບັນທຶກແລ້ວ 100%', duration: 2 })
+      notification.open({
+        key: messageKey,
+        type: 'success',
+        message: 'ບັນທຶກແລ້ວ 100%',
+        placement: 'bottom',
+        duration: 2,
+      })
 
       setTimeout(() => {
         updateRows((prev) =>
@@ -337,7 +345,13 @@ function AppContent({ prefersDark }) {
       }, 1500)
     } catch (err) {
       clearInterval(progressTimer)
-      message.open({ key: messageKey, type: 'error', content: 'ບັນທຶກບໍ່ສຳເລັດ', duration: 3 })
+      notification.open({
+        key: messageKey,
+        type: 'error',
+        message: 'ບັນທຶກບໍ່ສຳເລັດ',
+        placement: 'bottom',
+        duration: 3,
+      })
       updateRows((prev) =>
         prev.map((r) => (r.key === key ? { ...r, status: 'error', errorMsg: err.message } : r))
       )
