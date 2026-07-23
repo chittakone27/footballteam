@@ -5,15 +5,21 @@ import { addRow, deleteRow, fetchRows, fileToBase64, isConfigured, updateRow } f
 
 const blankSnapshot = () => ({ name: '', shirtNumber: '', size: '' })
 
+const PRICE_PER_UNIT = 130000
+
+// Google Sheets returns numeric-looking cells (e.g. shirt numbers) as JS
+// numbers, not strings — coerce everything to a string so .trim() etc. work.
+const toStr = (v) => (v === null || v === undefined ? '' : String(v))
+
 const toRowState = (r) => ({
   key: `row-${r.rowIndex}`,
   rowIndex: r.rowIndex,
   no: r.no ?? null,
-  name: r.name || '',
-  shirtNumber: r.shirtNumber || '',
-  size: r.size || '',
-  imageUrl: r.imageUrl || '',
-  savedSnapshot: { name: r.name || '', shirtNumber: r.shirtNumber || '', size: r.size || '' },
+  name: toStr(r.name),
+  shirtNumber: toStr(r.shirtNumber),
+  size: toStr(r.size),
+  imageUrl: toStr(r.imageUrl),
+  savedSnapshot: { name: toStr(r.name), shirtNumber: toStr(r.shirtNumber), size: toStr(r.size) },
   pendingFile: null,
   previewUrl: null,
   status: 'idle',
@@ -22,6 +28,7 @@ const toRowState = (r) => ({
 function App() {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadProgress, setLoadProgress] = useState(0)
   const [loadError, setLoadError] = useState('')
   const newRowId = useRef(0)
 
@@ -33,12 +40,23 @@ function App() {
   async function load() {
     setLoading(true)
     setLoadError('')
+    setLoadProgress(0)
+
+    // Apps Script doesn't expose real download progress, so climb toward
+    // 90% while waiting and snap to 100% once the data actually arrives.
+    const progressTimer = setInterval(() => {
+      setLoadProgress((p) => Math.min(p + Math.random() * 18, 90))
+    }, 200)
+
     try {
       const data = await fetchRows()
+      clearInterval(progressTimer)
+      setLoadProgress(100)
       setRows(data.map(toRowState))
+      setTimeout(() => setLoading(false), 250)
     } catch (err) {
+      clearInterval(progressTimer)
       setLoadError(err.message)
-    } finally {
       setLoading(false)
     }
   }
@@ -126,11 +144,15 @@ function App() {
                 ...r,
                 rowIndex: saved.rowIndex,
                 no: saved.no,
-                name: saved.name,
-                shirtNumber: saved.shirtNumber,
-                size: saved.size,
-                imageUrl: saved.imageUrl,
-                savedSnapshot: { name: saved.name, shirtNumber: saved.shirtNumber, size: saved.size },
+                name: toStr(saved.name),
+                shirtNumber: toStr(saved.shirtNumber),
+                size: toStr(saved.size),
+                imageUrl: toStr(saved.imageUrl),
+                savedSnapshot: {
+                  name: toStr(saved.name),
+                  shirtNumber: toStr(saved.shirtNumber),
+                  size: toStr(saved.size),
+                },
                 pendingFile: null,
                 previewUrl: null,
                 status: 'saved',
@@ -149,6 +171,14 @@ function App() {
         prev.map((r) => (r.key === key ? { ...r, status: 'error', errorMsg: err.message } : r))
       )
     }
+  }
+
+  async function handleRemoveImage(key) {
+    const row = rows.find((r) => r.key === key)
+    if (!row || !row.imageUrl) return
+    if (!window.confirm(`ລຶບຮູບຫຼັກຖານການໂອນ ຂອງ "${row.name}" ບໍ?`)) return
+
+    await saveRow(key, { ...row, imageUrl: '', pendingFile: null, previewUrl: null })
   }
 
   async function handleDelete(key) {
@@ -181,6 +211,29 @@ function App() {
     }
   }
 
+  const shirtNumberCounts = rows.reduce((counts, r) => {
+    const key = r.shirtNumber.trim()
+    if (key) counts[key] = (counts[key] || 0) + 1
+    return counts
+  }, {})
+
+  const paidCount = rows.filter((r) => r.imageUrl).length
+  const totalCollected = paidCount * PRICE_PER_UNIT
+
+  if (isConfigured() && loading) {
+    return (
+      <div className="page">
+        <div className="loading-fullscreen">
+          <span className="football-spinner" aria-hidden="true">
+            ⚽
+          </span>
+          <p className="loading-percent">{Math.round(loadProgress)}%</p>
+          <p className="loading-text">ກຳລັງໂຫຼດຂໍ້ມູນ...</p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="page">
       <div className="sheet-card">
@@ -192,7 +245,20 @@ function App() {
           </p>
         )}
 
-        {isConfigured() && loading && <p className="banner">ກຳລັງໂຫຼດຂໍ້ມູນ...</p>}
+        {isConfigured() && !loadError && (
+          <div className="summary-card">
+            <div className="summary-stat">
+              <span className="summary-label">ເງິນທີ່ເກັບໄດ້ທັງໝົດ</span>
+              <span className="summary-value">{totalCollected.toLocaleString()} ກີບ</span>
+              <span className="summary-sub">({paidCount} ຄົນຈ່າຍແລ້ວ)</span>
+            </div>
+            <label className="summary-input">
+              <span>ລາຄາຕໍ່ຄົນ</span>
+              <input type="number" value={PRICE_PER_UNIT} disabled />
+              <span>ກີບ</span>
+            </label>
+          </div>
+        )}
 
         {isConfigured() && loadError && (
           <p className="banner banner-error">
@@ -203,16 +269,17 @@ function App() {
           </p>
         )}
 
-        {isConfigured() && !loading && !loadError && (
+        {isConfigured() && !loadError && (
           <div className="table-scroll">
             <table className="sheet-table">
               <thead>
                 <tr>
                   <th className="col-num">#</th>
-                  <th>ຊື</th>
+                  <th className="col-name">ຊື</th>
                   <th>ເບີເສື້ອ</th>
                   <th>size</th>
                   <th>ຫຼັກຖານການໂອນ (ຮູບ)</th>
+                  <th>ສະຖານະ</th>
                   <th></th>
                 </tr>
               </thead>
@@ -222,9 +289,13 @@ function App() {
                     key={row.key}
                     row={row}
                     index={i}
+                    isDuplicateShirtNumber={
+                      Boolean(row.shirtNumber.trim()) && shirtNumberCounts[row.shirtNumber.trim()] > 1
+                    }
                     onFieldChange={handleFieldChange}
                     onFieldCommit={handleFieldCommit}
                     onFileChange={handleFileChange}
+                    onRemoveImage={handleRemoveImage}
                     onDelete={handleDelete}
                   />
                 ))}
@@ -233,7 +304,7 @@ function App() {
           </div>
         )}
 
-        {isConfigured() && !loading && !loadError && (
+        {isConfigured() && !loadError && (
           <button type="button" className="add-row-button" onClick={handleAddRow}>
             + ເພີ່ມແຖວ
           </button>

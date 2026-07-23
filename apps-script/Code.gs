@@ -104,8 +104,9 @@ function handleUpdate(data) {
   let imageUrl = data.existingImageUrl || '';
   if (data.fileData) {
     imageUrl = saveImageToDrive(data.fileName, data.mimeType, data.fileData);
-    sheet.getRange(rowIndex, COL.IMAGE_URL).setValue(imageUrl);
   }
+  // Always write imageUrl (even blank) so removing an image actually clears the cell.
+  sheet.getRange(rowIndex, COL.IMAGE_URL).setValue(imageUrl);
 
   return {
     ok: true,

@@ -9,7 +9,16 @@ const STATUS_LABEL = {
   error: 'ບໍ່ສຳເລັດ',
 }
 
-function SheetRow({ row, index, onFieldChange, onFieldCommit, onFileChange, onDelete }) {
+function SheetRow({
+  row,
+  index,
+  isDuplicateShirtNumber,
+  onFieldChange,
+  onFieldCommit,
+  onFileChange,
+  onRemoveImage,
+  onDelete,
+}) {
   const fileInputRef = useRef(null)
   const thumb = row.previewUrl || driveThumbnailUrl(row.imageUrl)
   const linkHref = row.previewUrl || row.imageUrl
@@ -17,7 +26,7 @@ function SheetRow({ row, index, onFieldChange, onFieldCommit, onFileChange, onDe
   return (
     <tr className={row.status === 'error' ? 'row-error' : undefined}>
       <td className="col-num">{row.no ?? index + 1}</td>
-      <td>
+      <td className="col-name">
         <input
           type="text"
           value={row.name}
@@ -27,12 +36,15 @@ function SheetRow({ row, index, onFieldChange, onFieldCommit, onFileChange, onDe
         />
       </td>
       <td>
-        <input
-          type="text"
-          value={row.shirtNumber}
-          onChange={(e) => onFieldChange(row.key, 'shirtNumber', e.target.value)}
-          onBlur={() => onFieldCommit(row.key)}
-        />
+        <div className="shirt-number-cell">
+          <input
+            type="text"
+            value={row.shirtNumber}
+            onChange={(e) => onFieldChange(row.key, 'shirtNumber', e.target.value)}
+            onBlur={() => onFieldCommit(row.key)}
+          />
+          {isDuplicateShirtNumber && <span className="duplicate-tag">ເບີເສື້ອຊໍ້າກັນ</span>}
+        </div>
       </td>
       <td>
         <select
@@ -68,6 +80,15 @@ function SheetRow({ row, index, onFieldChange, onFieldCommit, onFileChange, onDe
           >
             {thumb ? 'ປ່ຽນຮູບ' : 'ເລືອກຮູບ'}
           </button>
+          {thumb && (
+            <button
+              type="button"
+              className="link-button remove-image-button"
+              onClick={() => onRemoveImage(row.key)}
+            >
+              ລຶບຮູບ
+            </button>
+          )}
           <input
             ref={fileInputRef}
             type="file"
@@ -80,6 +101,13 @@ function SheetRow({ row, index, onFieldChange, onFieldCommit, onFileChange, onDe
             }}
           />
         </div>
+      </td>
+      <td className="col-status">
+        {row.imageUrl ? (
+          <span className="status-badge status-badge-paid">ຈ່າຍແລ້ວ</span>
+        ) : (
+          <span className="status-badge status-badge-unpaid">ຍັງບໍ່ທັນຈ່າຍ</span>
+        )}
       </td>
       <td className="col-actions">
         {row.status && row.status !== 'idle' && (
