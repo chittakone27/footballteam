@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
+  App as AntdApp,
   Button,
   ConfigProvider,
   Flex,
@@ -87,6 +88,27 @@ function usePrefersDark() {
 }
 
 function App() {
+  const prefersDark = usePrefersDark()
+
+  const themeConfig = {
+    algorithm: prefersDark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
+    token: { colorPrimary: '#aa3bff', fontFamily: 'var(--sans)' },
+    components: {
+      Table: { headerBg: prefersDark ? '#374151' : '#e5e7eb' },
+    },
+  }
+
+  return (
+    <ConfigProvider theme={themeConfig}>
+      <AntdApp>
+        <AppContent prefersDark={prefersDark} />
+      </AntdApp>
+    </ConfigProvider>
+  )
+}
+
+function AppContent({ prefersDark }) {
+  const { message } = AntdApp.useApp()
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [loadProgress, setLoadProgress] = useState(0)
@@ -95,7 +117,6 @@ function App() {
   const newRowId = useRef(0)
   const rowsRef = useRef([])
   const pendingSaves = useRef(new Map())
-  const prefersDark = usePrefersDark()
 
   // rowsRef is the authoritative, synchronously-updated source of truth for
   // any logic that reads "current rows" (e.g. inside async save chains).
@@ -231,6 +252,25 @@ function App() {
 
   async function saveRow(key, merged) {
     updateRows((prev) => prev.map((r) => (r.key === key ? { ...r, status: 'saving' } : r)))
+
+    // Apps Script doesn't expose real upload progress, so climb toward 90%
+    // while waiting and snap to 100% once the save actually completes —
+    // same simulated-percentage approach as the initial page load.
+    const messageKey = `save-${key}`
+    let saveProgress = 0
+    const showProgress = () =>
+      message.open({
+        key: messageKey,
+        type: 'loading',
+        content: `ກຳລັງບັນທຶກ... ${Math.round(saveProgress)}%`,
+        duration: 0,
+      })
+    showProgress()
+    const progressTimer = setInterval(() => {
+      saveProgress = Math.min(saveProgress + Math.random() * 20, 90)
+      showProgress()
+    }, 200)
+
     try {
       let fileFields = {}
       if (merged.pendingFile) {
@@ -287,12 +327,17 @@ function App() {
         })
       )
 
+      clearInterval(progressTimer)
+      message.open({ key: messageKey, type: 'success', content: 'ບັນທຶກແລ້ວ 100%', duration: 2 })
+
       setTimeout(() => {
         updateRows((prev) =>
           prev.map((r) => (r.key === key && r.status === 'saved' ? { ...r, status: 'idle' } : r))
         )
       }, 1500)
     } catch (err) {
+      clearInterval(progressTimer)
+      message.open({ key: messageKey, type: 'error', content: 'ບັນທຶກບໍ່ສຳເລັດ', duration: 3 })
       updateRows((prev) =>
         prev.map((r) => (r.key === key ? { ...r, status: 'error', errorMsg: err.message } : r))
       )
@@ -388,34 +433,23 @@ function App() {
     [rows]
   )
 
-  const themeConfig = {
-    algorithm: prefersDark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
-    token: { colorPrimary: '#aa3bff', fontFamily: 'var(--sans)' },
-    components: {
-      Table: { headerBg: prefersDark ? '#374151' : '#e5e7eb' },
-    },
-  }
-
   if (isConfigured() && loading) {
     return (
-      <ConfigProvider theme={themeConfig}>
-        <Flex vertical align="center" justify="center" style={{ minHeight: '100svh', gap: 14 }}>
-          <span className="football-spinner" aria-hidden="true">
-            ⚽
-          </span>
-          <Typography.Title level={3} style={{ margin: 0 }}>
-            {Math.round(loadProgress)}%
-          </Typography.Title>
-          <Typography.Text type="secondary">ກຳລັງໂຫຼດຂໍ້ມູນ...</Typography.Text>
-        </Flex>
-      </ConfigProvider>
+      <Flex vertical align="center" justify="center" style={{ minHeight: '100svh', gap: 14 }}>
+        <span className="football-spinner" aria-hidden="true">
+          ⚽
+        </span>
+        <Typography.Title level={3} style={{ margin: 0 }}>
+          {Math.round(loadProgress)}%
+        </Typography.Title>
+        <Typography.Text type="secondary">ກຳລັງໂຫຼດຂໍ້ມູນ...</Typography.Text>
+      </Flex>
     )
   }
 
   return (
-    <ConfigProvider theme={themeConfig}>
-      <div className="page">
-        <div className="sheet-card">
+    <div className="page">
+      <div className="sheet-card">
           <Typography.Title level={3} style={{ marginBottom: 16 }}>
             ຕາຕະລາງຊື່ເຮັດເສື້ອ
           </Typography.Title>
@@ -513,8 +547,8 @@ function App() {
           />
         )}
       </div>
-    </ConfigProvider>
   )
 }
 
 export default App
+

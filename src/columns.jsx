@@ -3,12 +3,6 @@ import { driveThumbnailUrl } from './driveUrl'
 
 const SIZE_OPTIONS = ['S', 'M', 'L', 'XL', 'XXL', '3XL'].map((s) => ({ value: s, label: s }))
 
-const SAVE_STATUS_LABEL = {
-  saving: 'ກຳລັງບັນທຶກ...',
-  saved: '✓ ບັນທຶກແລ້ວ',
-  error: 'ບໍ່ສຳເລັດ',
-}
-
 export function buildColumns({
   shirtNumberCounts,
   onFieldChange,
@@ -138,13 +132,9 @@ export function buildColumns({
       width: 160,
       render: (_, record) => (
         <Space>
-          {record.status && record.status !== 'idle' && (
-            <Typography.Text
-              type={record.status === 'error' ? 'danger' : 'secondary'}
-              title={record.status === 'error' ? record.errorMsg : undefined}
-              style={{ fontSize: 12 }}
-            >
-              {SAVE_STATUS_LABEL[record.status]}
+          {record.status === 'error' && (
+            <Typography.Text type="danger" title={record.errorMsg} style={{ fontSize: 12 }}>
+              ບໍ່ສຳເລັດ
             </Typography.Text>
           )}
           <Popconfirm
