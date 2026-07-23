@@ -25,17 +25,95 @@ const toRowState = (r) => ({
   status: 'idle',
 })
 
+const POLL_INTERVAL_MS = 5000
+
+// A new row only gets created once Name, Number, and Size are all filled in
+// — partial data (e.g. just a name) is kept locally but never posted.
+const hasRequiredFields = (row) =>
+  Boolean(row.name.trim() && row.shirtNumber.trim() && row.size.trim())
+
+// Merge freshly-fetched sheet data into local state without clobbering rows
+// the user is actively editing/saving right now.
+function mergeServerRows(localRows, serverRows) {
+  const localByIndex = new Map(localRows.filter((r) => r.rowIndex != null).map((r) => [r.rowIndex, r]))
+
+  const merged = serverRows.map((serverRow) => {
+    const local = localByIndex.get(serverRow.rowIndex)
+    if (!local) return serverRow
+
+    const isDirty =
+      local.name !== local.savedSnapshot.name ||
+      local.shirtNumber !== local.savedSnapshot.shirtNumber ||
+      local.size !== local.savedSnapshot.size
+
+    const isBusy = local.status === 'saving' || local.status === 'error' || Boolean(local.pendingFile)
+
+    return isDirty || isBusy ? local : serverRow
+  })
+
+  // Keep any not-yet-saved rows the user just added locally (rowIndex null).
+  const unsavedLocalRows = localRows.filter((r) => r.rowIndex == null)
+  return [...merged, ...unsavedLocalRows]
+}
+
 function App() {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [loadProgress, setLoadProgress] = useState(0)
   const [loadError, setLoadError] = useState('')
   const newRowId = useRef(0)
+  const rowsRef = useRef([])
+  const pendingSaves = useRef(new Map())
+
+  // rowsRef is the authoritative, synchronously-updated source of truth for
+  // any logic that reads "current rows" (e.g. inside async save chains).
+  // Syncing it only via a useEffect on `rows` isn't safe here: React doesn't
+  // guarantee that effect runs before the next microtask in a promise chain
+  // (like the next queued save in runExclusive), so a fast-fired second save
+  // could still read stale data and fire a duplicate "add". Every state
+  // update goes through updateRows() below, which writes the ref immediately.
+  function updateRows(updater) {
+    const next = typeof updater === 'function' ? updater(rowsRef.current) : updater
+    rowsRef.current = next
+    setRows(next)
+  }
+
+  // Ensures overlapping commits for the same row (e.g. tabbing Name -> Number
+  // on a brand-new row before the first save finishes) run one after another
+  // instead of both firing an "add" and creating two rows.
+  function runExclusive(key, fn) {
+    const prior = pendingSaves.current.get(key) || Promise.resolve()
+    const next = prior.then(fn, fn).finally(() => {
+      if (pendingSaves.current.get(key) === next) {
+        pendingSaves.current.delete(key)
+      }
+    })
+    pendingSaves.current.set(key, next)
+    return next
+  }
 
   useEffect(() => {
     if (isConfigured()) load()
     else setLoading(false)
   }, [])
+
+  // Poll in the background so changes made elsewhere (another device, or
+  // edits made directly in Google Sheets) show up without a manual refresh.
+  useEffect(() => {
+    if (!isConfigured()) return
+    const interval = setInterval(silentRefresh, POLL_INTERVAL_MS)
+    return () => clearInterval(interval)
+  }, [])
+
+  async function silentRefresh() {
+    try {
+      const data = await fetchRows()
+      const serverRows = data.map(toRowState)
+      updateRows((prev) => mergeServerRows(prev, serverRows))
+    } catch {
+      // Silent — don't disrupt the UI over a background poll failure.
+    }
+  }
 
   async function load() {
     setLoading(true)
@@ -52,7 +130,7 @@ function App() {
       const data = await fetchRows()
       clearInterval(progressTimer)
       setLoadProgress(100)
-      setRows(data.map(toRowState))
+      updateRows(data.map(toRowState))
       setTimeout(() => setLoading(false), 250)
     } catch (err) {
       clearInterval(progressTimer)
@@ -63,7 +141,7 @@ function App() {
 
   function handleAddRow() {
     newRowId.current += 1
-    setRows((prev) => [
+    updateRows((prev) => [
       ...prev,
       {
         key: `new-${newRowId.current}`,
@@ -82,38 +160,45 @@ function App() {
   }
 
   function handleFieldChange(key, field, value) {
-    setRows((prev) => prev.map((r) => (r.key === key ? { ...r, [field]: value } : r)))
+    updateRows((prev) => prev.map((r) => (r.key === key ? { ...r, [field]: value } : r)))
   }
 
   async function handleFieldCommit(key, overrideFields = {}) {
-    const row = rows.find((r) => r.key === key)
-    if (!row) return
-    const merged = { ...row, ...overrideFields }
+    await runExclusive(key, async () => {
+      const row = rowsRef.current.find((r) => r.key === key)
+      if (!row) return
+      const merged = { ...row, ...overrideFields }
 
-    const dirty =
-      merged.name !== row.savedSnapshot.name ||
-      merged.shirtNumber !== row.savedSnapshot.shirtNumber ||
-      merged.size !== row.savedSnapshot.size
+      const dirty =
+        merged.name !== row.savedSnapshot.name ||
+        merged.shirtNumber !== row.savedSnapshot.shirtNumber ||
+        merged.size !== row.savedSnapshot.size
 
-    if (!dirty) return
-    if (!merged.rowIndex && !merged.name.trim()) return // don't create blank rows yet
+      if (!dirty) return
+      if (!merged.rowIndex && !hasRequiredFields(merged)) return // wait for name+number+size before creating
 
-    await saveRow(key, merged)
+      await saveRow(key, merged)
+    })
   }
 
   async function handleFileChange(key, file) {
     const previewUrl = URL.createObjectURL(file)
-    const row = rows.find((r) => r.key === key)
-    if (!row) return
-    const merged = { ...row, pendingFile: file, previewUrl }
-    setRows((prev) => prev.map((r) => (r.key === key ? merged : r)))
+    updateRows((prev) =>
+      prev.map((r) => (r.key === key ? { ...r, pendingFile: file, previewUrl } : r))
+    )
 
-    if (!merged.rowIndex && !merged.name.trim()) return // wait for a name before creating
-    await saveRow(key, merged)
+    await runExclusive(key, async () => {
+      const row = rowsRef.current.find((r) => r.key === key)
+      if (!row) return
+      const merged = { ...row, pendingFile: file, previewUrl }
+
+      if (!merged.rowIndex && !hasRequiredFields(merged)) return // wait for name+number+size before creating
+      await saveRow(key, merged)
+    })
   }
 
   async function saveRow(key, merged) {
-    setRows((prev) => prev.map((r) => (r.key === key ? { ...r, status: 'saving' } : r)))
+    updateRows((prev) => prev.map((r) => (r.key === key ? { ...r, status: 'saving' } : r)))
     try {
       let fileFields = {}
       if (merged.pendingFile) {
@@ -137,65 +222,78 @@ function App() {
         : await addRow(fields)
 
       const saved = result.row
-      setRows((prev) =>
-        prev.map((r) =>
-          r.key === key
-            ? {
-                ...r,
-                rowIndex: saved.rowIndex,
-                no: saved.no,
-                name: toStr(saved.name),
-                shirtNumber: toStr(saved.shirtNumber),
-                size: toStr(saved.size),
-                imageUrl: toStr(saved.imageUrl),
-                savedSnapshot: {
-                  name: toStr(saved.name),
-                  shirtNumber: toStr(saved.shirtNumber),
-                  size: toStr(saved.size),
-                },
-                pendingFile: null,
-                previewUrl: null,
-                status: 'saved',
-              }
-            : r
-        )
+      const confirmedSnapshot = {
+        name: toStr(saved.name),
+        shirtNumber: toStr(saved.shirtNumber),
+        size: toStr(saved.size),
+      }
+
+      updateRows((prev) =>
+        prev.map((r) => {
+          if (r.key !== key) return r
+
+          // Only adopt the server-echoed text fields if nothing changed
+          // locally while this save was in flight — otherwise a newer edit
+          // (typed into another field, or this one, during the round trip)
+          // would get silently wiped out. The row still shows as "dirty"
+          // against the new savedSnapshot, so any newer edit auto-saves on
+          // the next commit instead of being lost.
+          const noNewerEdits =
+            r.name === merged.name && r.shirtNumber === merged.shirtNumber && r.size === merged.size
+
+          return {
+            ...r,
+            rowIndex: saved.rowIndex,
+            no: saved.no,
+            imageUrl: toStr(saved.imageUrl),
+            ...(noNewerEdits ? confirmedSnapshot : {}),
+            savedSnapshot: confirmedSnapshot,
+            pendingFile: null,
+            previewUrl: null,
+            status: 'saved',
+          }
+        })
       )
 
       setTimeout(() => {
-        setRows((prev) =>
+        updateRows((prev) =>
           prev.map((r) => (r.key === key && r.status === 'saved' ? { ...r, status: 'idle' } : r))
         )
       }, 1500)
     } catch (err) {
-      setRows((prev) =>
+      updateRows((prev) =>
         prev.map((r) => (r.key === key ? { ...r, status: 'error', errorMsg: err.message } : r))
       )
     }
   }
 
   async function handleRemoveImage(key) {
-    const row = rows.find((r) => r.key === key)
-    if (!row || !row.imageUrl) return
-    if (!window.confirm(`ລຶບຮູບຫຼັກຖານການໂອນ ຂອງ "${row.name}" ບໍ?`)) return
+    const current = rowsRef.current.find((r) => r.key === key)
+    if (!current || !current.imageUrl) return
+    if (!window.confirm(`ລຶບຮູບຫຼັກຖານການໂອນ ຂອງ "${current.name}" ບໍ?`)) return
 
-    await saveRow(key, { ...row, imageUrl: '', pendingFile: null, previewUrl: null })
+    await runExclusive(key, async () => {
+      const row = rowsRef.current.find((r) => r.key === key)
+      if (!row || !row.imageUrl) return
+      await saveRow(key, { ...row, imageUrl: '', pendingFile: null, previewUrl: null })
+    })
   }
 
   async function handleDelete(key) {
-    const row = rows.find((r) => r.key === key)
+    const row = rowsRef.current.find((r) => r.key === key)
     if (!row) return
 
     if (!row.rowIndex) {
-      setRows((prev) => prev.filter((r) => r.key !== key))
+      updateRows((prev) => prev.filter((r) => r.key !== key))
       return
     }
 
     if (!window.confirm(`ລຶບແຖວຂອງ "${row.name}" ບໍ?`)) return
 
-    setRows((prev) => prev.map((r) => (r.key === key ? { ...r, status: 'saving' } : r)))
+    updateRows((prev) => prev.map((r) => (r.key === key ? { ...r, status: 'saving' } : r)))
     try {
       await deleteRow(row.rowIndex)
-      setRows((prev) =>
+      updateRows((prev) =>
         prev
           .filter((r) => r.key !== key)
           .map((r) =>
@@ -205,7 +303,7 @@ function App() {
           )
       )
     } catch (err) {
-      setRows((prev) =>
+      updateRows((prev) =>
         prev.map((r) => (r.key === key ? { ...r, status: 'error', errorMsg: err.message } : r))
       )
     }
